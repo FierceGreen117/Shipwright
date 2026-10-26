@@ -7,6 +7,7 @@
 #include "z_en_test.h"
 #include "objects/object_sk2/object_sk2.h"
 #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
+#include "soh/Network/Anchor/GanonsArmy.h"
 
 #define FLAGS (ACTOR_FLAG_ATTENTION_ENABLED | ACTOR_FLAG_HOSTILE | ACTOR_FLAG_UPDATE_CULLING_DISABLED)
 
@@ -253,6 +254,28 @@ void EnTest_SetupAction(EnTest* this, EnTestActionFunc actionFunc) {
     this->actionFunc = actionFunc;
 }
 
+// MARK: - Ganon's Army puppet control
+// When an army player controls this Stalfos (on Link's game), their buttons pick its moves instead of the AI.
+
+static GanonsArmyPuppetInput sPuppetInput;
+
+static s32 EnTest_IsPuppet(EnTest* this) {
+    return GanonsArmy_GetPuppetInput(&this->actor, &sPuppetInput);
+}
+
+void EnTest_Puppet(EnTest* this, PlayState* play);
+
+void EnTest_SetupPuppet(EnTest* this) {
+    Animation_MorphToLoop(&this->skelAnime, &gStalfosMiddleGuardAnim, -4.0f);
+    this->unk_7C8 = 0xA;
+    this->actor.speedXZ = 0.0f;
+    this->actor.world.rot.y = this->actor.shape.rot.y;
+    if (this->unk_7DE == 5) {
+        this->unk_7DE = 0;
+    }
+    EnTest_SetupAction(this, EnTest_Puppet);
+}
+
 void EnTest_Init(Actor* thisx, PlayState* play) {
     EffectBlureInit1 slashBlure;
     EnTest* this = (EnTest*)thisx;
@@ -329,6 +352,11 @@ void EnTest_Destroy(Actor* thisx, PlayState* play) {
  * a new action as a last resort
  */
 void EnTest_ChooseRandomAction(EnTest* this, PlayState* play) {
+    if (EnTest_IsPuppet(this)) {
+        EnTest_SetupPuppet(this);
+        return;
+    }
+
     switch ((u32)(Rand_ZeroOne() * 10.0f)) {
         case 0:
         case 1:
@@ -362,6 +390,11 @@ void EnTest_ChooseAction(EnTest* this, PlayState* play) {
     s32 pad;
     Player* player = GET_PLAYER(play);
     s16 yawDiff = player->actor.shape.rot.y - this->actor.shape.rot.y;
+
+    if (EnTest_IsPuppet(this)) {
+        EnTest_SetupPuppet(this);
+        return;
+    }
 
     yawDiff = ABS(yawDiff);
 
@@ -436,7 +469,9 @@ void EnTest_SetupWaitGround(EnTest* this) {
 void EnTest_WaitGround(EnTest* this, PlayState* play) {
     SkelAnime_Update(&this->skelAnime);
 
-    if ((this->timer == 0) && (ABS(this->actor.yDistToPlayer) < 150.0f)) {
+    if ((this->timer == 0) &&
+        ((ABS(this->actor.yDistToPlayer) < 150.0f) ||
+         (EnTest_IsPuppet(this) && (sPuppetInput.pressed & (BTN_A | BTN_B))))) {
         this->unk_7C8 = 3;
         EnTest_SetupAction(this, EnTest_Rise);
         this->actor.world.rot.y = this->actor.yawTowardsPlayer;
@@ -467,7 +502,8 @@ void EnTest_WaitAbove(EnTest* this, PlayState* play) {
     SkelAnime_Update(&this->skelAnime);
     this->actor.world.pos.y = this->actor.home.pos.y + 150.0f;
 
-    if ((this->actor.xzDistToPlayer < 200.0f) && (ABS(this->actor.yDistToPlayer) < 450.0f)) {
+    if (((this->actor.xzDistToPlayer < 200.0f) && (ABS(this->actor.yDistToPlayer) < 450.0f)) ||
+        (EnTest_IsPuppet(this) && (sPuppetInput.pressed & (BTN_A | BTN_B)))) {
         EnTest_SetupAction(this, EnTest_Fall);
         this->actor.flags |= ACTOR_FLAG_ATTENTION_ENABLED;
         this->actor.shape.rot.y = this->actor.world.rot.y = this->actor.yawTowardsPlayer;
@@ -924,7 +960,13 @@ void EnTest_SlashDown(EnTest* this, PlayState* play) {
     }
 
     if (SkelAnime_Update(&this->skelAnime)) {
-        if ((play->gameplayFrames % 2) != 0) {
+        if (EnTest_IsPuppet(this)) {
+            if (sPuppetInput.held & BTN_B) {
+                EnTest_SetupSlashUp(this);
+            } else {
+                EnTest_SetupSlashDownEnd(this);
+            }
+        } else if ((play->gameplayFrames % 2) != 0) {
             EnTest_SetupSlashDownEnd(this);
         } else {
             EnTest_SetupSlashUp(this);
@@ -944,6 +986,12 @@ void EnTest_SlashDownEnd(EnTest* this, PlayState* play) {
     s16 yawDiff;
 
     if (SkelAnime_Update(&this->skelAnime)) {
+        if (EnTest_IsPuppet(this)) {
+            this->swordCollider.base.atFlags &= ~AT_HIT;
+            EnTest_SetupPuppet(this);
+            return;
+        }
+
         if (this->swordCollider.base.atFlags & AT_HIT) {
             this->swordCollider.base.atFlags &= ~AT_HIT;
             if (this->actor.params != STALFOS_TYPE_CEILING) {
@@ -1019,7 +1067,11 @@ void EnTest_SlashUp(EnTest* this, PlayState* play) {
     }
 
     if (SkelAnime_Update(&this->skelAnime)) {
-        EnTest_SetupSlashDown(this);
+        if (EnTest_IsPuppet(this) && !(sPuppetInput.held & BTN_B)) {
+            EnTest_SetupSlashDownEnd(this);
+        } else {
+            EnTest_SetupSlashDown(this);
+        }
     }
 }
 
@@ -1051,6 +1103,11 @@ void EnTest_JumpBack(EnTest* this, PlayState* play) {
     }
 
     if (SkelAnime_Update(&this->skelAnime)) {
+        if (EnTest_IsPuppet(this)) {
+            this->actor.flags |= ACTOR_FLAG_ATTENTION_ENABLED;
+            EnTest_SetupPuppet(this);
+            return;
+        }
         if (!EnTest_ReactToProjectile(play, this)) {
             if (this->actor.xzDistToPlayer <= 100.0f) {
                 if (Actor_IsFacingPlayer(&this->actor, 0x1555)) {
@@ -1702,6 +1759,65 @@ void EnTest_UpdateDamage(EnTest* this, PlayState* play) {
     }
 }
 
+void EnTest_Puppet(EnTest* this, PlayState* play) {
+    GanonsArmyPuppetInput* in = &sPuppetInput;
+
+    if (!EnTest_IsPuppet(this)) {
+        EnTest_SetupIdle(this);
+        return;
+    }
+
+    SkelAnime_Update(&this->skelAnime);
+
+    // Attacks and moves
+    if (in->pressed & BTN_B) {
+        this->actor.world.rot.y = this->actor.shape.rot.y;
+        EnTest_SetupSlashDown(this);
+        return;
+    }
+    if (in->pressed & BTN_A) {
+        this->actor.world.rot.y = this->actor.shape.rot.y;
+        EnTest_SetupJumpslash(this);
+        return;
+    }
+    if ((in->pressed & BTN_Z) && (this->actor.params != STALFOS_TYPE_CEILING)) {
+        this->actor.world.rot.y = this->actor.shape.rot.y;
+        EnTest_SetupJumpBack(this);
+        return;
+    }
+
+    // Shield: hold R
+    if (in->held & BTN_R) {
+        if (this->unk_7DE == 0) {
+            this->unk_7DE = 1;
+        }
+    } else if (this->unk_7DE == 2) {
+        this->unk_7DE = 3;
+    }
+
+    // Walking
+    if (in->mag > 0.15f) {
+        f32 targetSpeed = in->mag * ((in->held & BTN_R) ? 2.5f : 4.5f);
+
+        Math_SmoothStepToS(&this->actor.shape.rot.y, in->yaw, 1, 0xBB8, 0);
+        this->actor.world.rot.y = this->actor.shape.rot.y;
+        Math_SmoothStepToF(&this->actor.speedXZ, targetSpeed, 1.0f, 1.0f, 0.0f);
+
+        if (this->skelAnime.animation != (void*)gStalfosSlowAdvanceAnim) {
+            Animation_MorphToLoop(&this->skelAnime, &gStalfosSlowAdvanceAnim, -4.0f);
+        }
+        this->skelAnime.playSpeed = CLAMP(this->actor.speedXZ * 0.4f, 0.5f, 2.0f);
+        this->unk_7C8 = 0xD;
+    } else {
+        Math_SmoothStepToF(&this->actor.speedXZ, 0.0f, 1.0f, 1.5f, 0.0f);
+
+        if (this->skelAnime.animation != (void*)gStalfosMiddleGuardAnim) {
+            Animation_MorphToLoop(&this->skelAnime, &gStalfosMiddleGuardAnim, -4.0f);
+        }
+        this->unk_7C8 = 0xA;
+    }
+}
+
 void EnTest_Update(Actor* thisx, PlayState* play) {
     EnTest* this = (EnTest*)thisx;
     f32 oldWeight;
@@ -1732,6 +1848,15 @@ void EnTest_Update(Actor* thisx, PlayState* play) {
                 GameInteractor_ExecuteOnEnemyDefeat(&this->actor);
                 return;
             }
+        }
+
+        // Ganon's Army: states where the AI would decide what to do next go to the player instead
+        if (EnTest_IsPuppet(this) &&
+            ((this->actionFunc == EnTest_Idle) || (this->actionFunc == EnTest_WalkAndBlock) ||
+             (this->actionFunc == EnTest_IdleFromBlock) || (this->actionFunc == EnTest_StopAndBlock) ||
+             (this->actionFunc == func_80860C24) || (this->actionFunc == func_808628C8) ||
+             (this->actionFunc == func_80860F84))) {
+            EnTest_SetupPuppet(this);
         }
 
         this->actionFunc(this, play);

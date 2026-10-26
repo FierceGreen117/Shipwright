@@ -14,6 +14,7 @@ extern std::shared_ptr<AnchorRoomWindow> mAnchorRoomWindow;
 static const char* pvpModes[3] = { "Off", "On", "On + Friendly Fire" };
 static std::vector<const char*> teleportModes = { "None", "Team Only", "All" };
 static std::vector<const char*> showLocationsModes = { "None", "Team Only", "All" };
+static const char* ganonsArmyRoles[3] = { "Off", "Play as Link", "Play as Ganon's Army" };
 
 void AnchorMainMenu(WidgetInfo& info) {
     auto anchor = Anchor::Instance;
@@ -156,6 +157,21 @@ void AnchorMainMenu(WidgetInfo& info) {
                            "Visibility is restricted according to the Show Locations mode for the room."
                          : "Cannot show other players because the room's Show Locations mode is set to None."));
     ImGui::EndDisabled();
+
+    ImGui::Spacing();
+
+    ImGui::SeparatorText("Ganon's Army");
+    if (UIWidgets::CVarCombobox("Your Role:", CVAR_REMOTE_ANCHOR("GanonsArmy.Role"), ganonsArmyRoles,
+                                UIWidgets::ComboboxOptions()
+                                    .DefaultIndex(GANONS_ARMY_ROLE_OFF)
+                                    .LabelPosition(UIWidgets::LabelPositions::Above)
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("One player picks Link. Everyone else picks Ganon's Army.\n\n"
+                                             "Ganon's Army: press L to take over a Stalfos or Iron Knuckle near Link "
+                                             "(press L again to switch).\n"
+                                             "B: Slash   A: Jump Attack   R: Block   Z: Dodge Back"))) {
+        anchor->SetGanonsArmyRole(CVarGetInteger(CVAR_REMOTE_ANCHOR("GanonsArmy.Role"), GANONS_ARMY_ROLE_OFF));
+    }
 
     ImGui::Spacing();
 

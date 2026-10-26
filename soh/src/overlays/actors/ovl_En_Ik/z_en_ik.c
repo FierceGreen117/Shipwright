@@ -10,8 +10,16 @@
 #include "vt.h"
 #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
 #include <libultraship/bridge/consolevariablebridge.h>
+#include "soh/Network/Anchor/GanonsArmy.h"
 
 #define FLAGS ACTOR_FLAG_UPDATE_CULLING_DISABLED
+
+// Ganon's Army: when an army player controls this Iron Knuckle (on Link's game), their buttons pick its moves
+static GanonsArmyPuppetInput sPuppetInput;
+
+static s32 EnIk_IsPuppet(struct EnIk* this) {
+    return GanonsArmy_GetPuppetInput((Actor*)this, &sPuppetInput);
+}
 
 typedef void (*EnIkDrawFunc)(struct EnIk*, PlayState*);
 
@@ -250,6 +258,9 @@ void func_80A74398(Actor* thisx, PlayState* play) {
 }
 
 s32 func_80A745E4(EnIk* this, PlayState* play) {
+    if (EnIk_IsPuppet(this)) {
+        return false;
+    }
     if (((this->armorStatusFlag != 0) || (this->actor.params == 0)) &&
         (func_800354B4(play, &this->actor, 100.0f, 0x2710, 0x4000, this->actor.shape.rot.y) != 0) &&
         (play->gameplayFrames & 1)) {
@@ -295,6 +306,14 @@ void func_80A74714(EnIk* this) {
 
 void func_80A747C0(EnIk* this, PlayState* play) {
     Vec3f sp24;
+
+    if ((this->skelAnime.playSpeed == 0.0f) && EnIk_IsPuppet(this) &&
+        (sPuppetInput.pressed & (BTN_A | BTN_B))) {
+        this->skelAnime.playSpeed = 1.0f;
+        if (!CVarGetInteger(CVAR_ENHANCEMENT("RandomizedEnemies"), 0)) {
+            func_800F5ACC(NA_BGM_MINI_BOSS);
+        }
+    }
 
     if (this->bodyCollider.base.acFlags & AC_HIT) {
         sp24 = this->actor.world.pos;
@@ -587,7 +606,9 @@ void func_80A755F0(EnIk* this) {
 void func_80A7567C(EnIk* this, PlayState* play) {
     CollisionCheck_SetAC(play, &play->colChkCtx, &this->shieldCollider.base);
     if (SkelAnime_Update(&this->skelAnime)) {
-        if ((ABS((s16)(this->actor.yawTowardsPlayer - this->actor.shape.rot.y)) <= 0x4000) &&
+        if (EnIk_IsPuppet(this)) {
+            func_80A7489C(this);
+        } else if ((ABS((s16)(this->actor.yawTowardsPlayer - this->actor.shape.rot.y)) <= 0x4000) &&
             (this->actor.xzDistToPlayer < 100.0f) && (ABS(this->actor.yDistToPlayer) < 150.0f)) {
             if ((play->gameplayFrames & 1)) {
                 func_80A74E2C(this);
@@ -626,7 +647,8 @@ void func_80A758B0(EnIk* this, PlayState* play) {
         this->bodyBreak.val = BODYBREAK_STATUS_FINISHED;
     }
     if (SkelAnime_Update(&this->skelAnime)) {
-        if (ABS((s16)(this->actor.yawTowardsPlayer - this->actor.shape.rot.y)) <= 0x4000) {
+        if (EnIk_IsPuppet(this) ||
+            ABS((s16)(this->actor.yawTowardsPlayer - this->actor.shape.rot.y)) <= 0x4000) {
             func_80A7489C(this);
             func_80A745E4(this, play);
         } else {
@@ -762,6 +784,73 @@ void func_80A75C38(EnIk* this, PlayState* play) {
     CollisionCheck_SpawnShieldParticles(play, &sp38);
 }
 
+void EnIk_Puppet(EnIk* this, PlayState* play);
+
+void EnIk_SetupPuppet(EnIk* this) {
+    f32 frames = Animation_GetLastFrame(&object_ik_Anim_00DD50);
+
+    this->unk_2F8 = 4;
+    this->actor.speedXZ = 0.0f;
+    Animation_Change(&this->skelAnime, &object_ik_Anim_00DD50, 0.0f, 0.0f, frames, ANIMMODE_LOOP, 4.0f);
+    EnIk_SetupAction(this, EnIk_Puppet);
+}
+
+void EnIk_Puppet(EnIk* this, PlayState* play) {
+    GanonsArmyPuppetInput* in = &sPuppetInput;
+
+    if (!EnIk_IsPuppet(this)) {
+        func_80A7489C(this);
+        return;
+    }
+
+    if (in->pressed & BTN_B) {
+        func_80A74E2C(this); // Overhead axe slam
+        return;
+    }
+    if (in->pressed & BTN_A) {
+        func_80A751C8(this); // Sideways axe swing
+        return;
+    }
+    if (in->pressed & BTN_R) {
+        func_80A755F0(this); // Block
+        return;
+    }
+    if (in->pressed & BTN_Z) {
+        func_80A754A0(this); // Spin around and swing
+        return;
+    }
+
+    if (in->mag > 0.15f) {
+        // Heavy and slow while the armor is on, faster once it comes off
+        s32 armorOn = (this->armorStatusFlag == 0);
+        const void* moveAnim = armorOn ? (const void*)gIronKnuckleWalkAnim : (const void*)gIronKnuckleRunAnim;
+
+        Math_SmoothStepToS(&this->actor.world.rot.y, in->yaw, 1, armorOn ? 0x320 : 0x4B0, 0);
+        this->actor.shape.rot.y = this->actor.world.rot.y;
+        this->actor.speedXZ = in->mag * (armorOn ? 1.2f : 3.0f);
+
+        if (this->skelAnime.animation != moveAnim) {
+            Animation_Change(&this->skelAnime, (AnimationHeader*)moveAnim, 1.0f, 0.0f,
+                             Animation_GetLastFrame((AnimationHeader*)moveAnim), ANIMMODE_LOOP, -4.0f);
+        }
+        this->skelAnime.playSpeed = CLAMP(in->mag * 1.2f, 0.5f, 1.2f);
+        this->unk_2F8 = 5;
+
+        SkelAnime_Update(&this->skelAnime);
+        if (((armorOn ? 0 : 2) == (s16)this->skelAnime.curFrame) ||
+            ((armorOn ? 0x10 : 9) == (s16)this->skelAnime.curFrame)) {
+            Audio_PlayActorSound2(&this->actor, NA_SE_EN_IRONNACK_WALK);
+        }
+    } else {
+        this->actor.speedXZ = 0.0f;
+        if (this->skelAnime.animation != (void*)object_ik_Anim_00DD50) {
+            EnIk_SetupPuppet(this);
+        }
+        this->unk_2F8 = 4;
+        SkelAnime_Update(&this->skelAnime);
+    }
+}
+
 void func_80A75FA0(Actor* thisx, PlayState* play) {
     EnIk* this = (EnIk*)thisx;
     s32 pad;
@@ -773,6 +862,10 @@ void func_80A75FA0(Actor* thisx, PlayState* play) {
     if ((this->actor.params == 0) && (this->actor.colChkInfo.health <= 10)) {
         func_80A781CC(&this->actor, play);
         return;
+    }
+    // Ganon's Army: standing around or walking is where the AI decides, so hand those to the player
+    if (EnIk_IsPuppet(this) && ((this->actionFunc == func_80A7492C) || (this->actionFunc == func_80A74BA4))) {
+        EnIk_SetupPuppet(this);
     }
     this->actionFunc(this, play);
     if (this->axeCollider.base.atFlags & AT_HIT) {

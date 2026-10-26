@@ -55,6 +55,8 @@ float OTRGetDimensionFromRightEdge(float v);
 
 void Anchor::RegisterHooks() {
 
+    RegisterGanonsArmyHooks();
+
     // #region Hooks that are required for basic Anchor functionality
 
     COND_HOOK(OnSceneSpawnActors, isConnected, [&]() {

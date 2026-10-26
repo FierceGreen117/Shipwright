@@ -63,6 +63,7 @@ inline void from_json(const json& j, AnchorClient& client) {
     client.sceneNum = j.value("sceneNum", (s16)SCENE_ID_MAX);
     client.curRoomNum = j.value("curRoomNum", (s8)-1);
     client.entranceIndex = j.value("entranceIndex", (s32)0);
+    client.gaRole = j.value("gaRole", (u8)0);
     client.self = j.value("self", false);
 }
 

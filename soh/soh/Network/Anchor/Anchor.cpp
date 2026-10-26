@@ -169,6 +169,14 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_UpdateRoomState(payload);
             else if (packetType == UPDATE_DUNGEON_ITEMS)
                 HandlePacket_UpdateDungeonItems(payload);
+            else if (packetType == GA_ENEMY_STATE)
+                HandlePacket_GaEnemyState(payload);
+            else if (packetType == GA_CLAIM)
+                HandlePacket_GaClaim(payload);
+            else if (packetType == GA_RELEASE)
+                HandlePacket_GaRelease(payload);
+            else if (packetType == GA_INPUT)
+                HandlePacket_GaInput(payload);
         } catch (const std::exception& e) {
             SPDLOG_ERROR("[Anchor] Exception while processing incoming packet {}", e.what());
             SPDLOG_ERROR("[Anchor] Packet: {}", payload.dump());

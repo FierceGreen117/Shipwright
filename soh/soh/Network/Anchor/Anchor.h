@@ -8,6 +8,8 @@
 #include <spdlog/spdlog.h>
 #include <queue>
 #include <mutex>
+#include <unordered_map>
+#include "soh/Network/Anchor/GanonsArmy.h"
 
 extern "C" {
 #include "variables.h"
@@ -33,6 +35,7 @@ typedef struct {
     s16 sceneNum;
     s8 curRoomNum;
     s32 entranceIndex;
+    u8 gaRole; // Ganon's Army role, see GanonsArmyRole
 
     // Only available in PLAYER_UPDATE packets
     s32 linkAge;
@@ -111,6 +114,16 @@ class Anchor : public Network {
     void HandlePacket_UpdateRoomState(nlohmann::json payload);
     void HandlePacket_UpdateTeamState(nlohmann::json payload);
 
+    // Ganon's Army (see GanonsArmy.cpp)
+    void HandlePacket_GaEnemyState(nlohmann::json payload);
+    void HandlePacket_GaClaim(nlohmann::json payload);
+    void HandlePacket_GaRelease(nlohmann::json payload);
+    void HandlePacket_GaInput(nlohmann::json payload);
+    void RegisterGanonsArmyHooks();
+    void GaLinkFrame();
+    void GaArmyFrame();
+    void GaMirrorEnemy(Actor* actor);
+
   public:
     uint32_t ownClientId;
     inline static const std::string clientVersion = (char*)gGitCommitHash;
@@ -138,6 +151,10 @@ class Anchor : public Network {
     inline static const std::string UPDATE_DUNGEON_ITEMS = "UPDATE_DUNGEON_ITEMS";
     inline static const std::string UPDATE_ROOM_STATE = "UPDATE_ROOM_STATE";
     inline static const std::string UPDATE_TEAM_STATE = "UPDATE_TEAM_STATE";
+    inline static const std::string GA_ENEMY_STATE = "GA_ENEMY_STATE";
+    inline static const std::string GA_CLAIM = "GA_CLAIM";
+    inline static const std::string GA_RELEASE = "GA_RELEASE";
+    inline static const std::string GA_INPUT = "GA_INPUT";
 
     static Anchor* Instance;
     std::map<uint32_t, AnchorClient> clients;
@@ -176,6 +193,38 @@ class Anchor : public Network {
     void SendPacket_UpdateDungeonItems();
     void SendPacket_UpdateRoomState();
     void SendPacket_UpdateTeamState();
+
+    // Ganon's Army (see GanonsArmy.cpp)
+    struct GaPuppet {
+        uint32_t clientId = 0;
+        GanonsArmyPuppetInput input = {};
+        u16 pendingPressed = 0;
+        u32 lastInputFrame = 0;
+        u32 consumedFrame = 0xFFFFFFFF;
+    };
+    struct GaMirror {
+        nlohmann::json state;
+        u32 receivedFrame = 0;
+        uint32_t controllerClientId = 0;
+    };
+    std::unordered_map<uint32_t, GaPuppet> gaPuppets;   // Link's game: enemy key -> army player controlling it
+    std::unordered_map<uint32_t, GaMirror> gaMirrors;   // Army game: enemy key -> latest state from Link's game
+    std::unordered_map<Actor*, uint32_t> gaSpawnedKeys; // Army game: mirror copies we spawned ourselves
+    uint32_t gaControlledKey = 0;                       // Army game: enemy key this player controls (0 = none)
+    s16 gaMirrorSceneNum = -1;
+    s8 gaLinkRoomNum = -1;
+    bool gaRoomChangeRequested = false;
+    s32 gaFollowEntrance = -1;
+    void* gaSavedPlayerDraw = nullptr;
+
+    u8 GetGanonsArmyRole();
+    void SetGanonsArmyRole(u8 role);
+    AnchorClient* GetGanonsArmyLink();
+    bool GaGetPuppetInput(Actor* actor, GanonsArmyPuppetInput* out);
+    void SendPacket_GaEnemyState();
+    void SendPacket_GaClaim(uint32_t key);
+    void SendPacket_GaRelease(uint32_t key);
+    void SendPacket_GaInput();
 };
 
 typedef enum {
