@@ -1,4 +1,5 @@
 #include <nlohmann/json.hpp>
+#include <chrono>
 
 #include "Anchor.h"
 #include "soh/Enhancements/nametag.h"
@@ -27,7 +28,12 @@ void Anchor::Disable() {
     RefreshClientActors();
 }
 
+// Used to notice when the server drops us right after every connect
+static std::chrono::steady_clock::time_point sConnectedAt;
+static int sQuickDrops = 0;
+
 void Anchor::OnConnected() {
+    sConnectedAt = std::chrono::steady_clock::now();
     SendPacket_Handshake();
     RegisterHooks();
 
@@ -37,6 +43,18 @@ void Anchor::OnConnected() {
 }
 
 void Anchor::OnDisconnected() {
+    // If the server keeps closing the connection within a few seconds (for example because another game is
+    // already using our saved client id), stop reusing that id so the server gives us a new one.
+    if (std::chrono::steady_clock::now() - sConnectedAt < std::chrono::seconds(5)) {
+        if (++sQuickDrops >= 2) {
+            SPDLOG_WARN("[Anchor] Server keeps dropping the connection, asking for a new client id");
+            ownClientId = 0;
+            sQuickDrops = 0;
+        }
+    } else {
+        sQuickDrops = 0;
+    }
+
     RegisterHooks();
 }
 

@@ -1,5 +1,14 @@
 #include "Network.h"
 #include <spdlog/spdlog.h>
+#include <chrono>
+#include <thread>
+
+// Pause before trying to connect again, waking early if the network is disabled
+static void WaitBeforeReconnect(const bool& isEnabled, int milliseconds) {
+    for (int waited = 0; waited < milliseconds && isEnabled; waited += 100) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+}
 
 // MARK: - Public
 
@@ -71,6 +80,9 @@ void Network::ReceiveFromServer() {
                 OnConnected();
                 break;
             }
+
+            // Couldn't reach the server, don't hammer it
+            WaitBeforeReconnect(isEnabled, 1000);
         }
 
         SDLNet_SocketSet socketSet = SDLNet_AllocSocketSet(1);
@@ -132,6 +144,9 @@ void Network::ReceiveFromServer() {
             receivedData.clear();
             OnDisconnected();
             SPDLOG_INFO("[Network] Ending receiving thread...");
+
+            // Wait a moment before reconnecting so a server that keeps dropping us doesn't cause a reconnect storm
+            WaitBeforeReconnect(isEnabled, 2000);
         }
     }
 }

@@ -745,23 +745,52 @@ void Anchor::GaArmyFrame() {
         }
     }
 
-    // L: take over the next free monster
+    // L: take over the nearest free monster of the kind picked in the menu (press again for the next one)
     if (CHECK_BTN_ALL(gPlayState->state.input[0].press.button, BTN_L) && gPlayState->pauseCtx.state == 0) {
-        std::vector<uint32_t> freeKeys;
+        s32 wanted = CVarGetInteger(CVAR_REMOTE_ANCHOR("GanonsArmy.Monster"), GANONS_ARMY_MONSTER_ANY);
+        s16 wantedId = wanted == GANONS_ARMY_MONSTER_STALFOS        ? ACTOR_EN_TEST
+                       : wanted == GANONS_ARMY_MONSTER_IRON_KNUCKLE ? ACTOR_EN_IK
+                                                                    : (s16)0;
+        const char* wantedName = wantedId == ACTOR_EN_TEST ? "Stalfos"
+                                 : wantedId == ACTOR_EN_IK ? "Iron Knuckles"
+                                                           : "monsters";
+
+        Vec3f linkPos = link->player != nullptr ? link->player->actor.world.pos : link->posRot.pos;
+
+        std::vector<std::pair<f32, uint32_t>> freeMonsters;
         for (auto& [key, mirror] : gaMirrors) {
             bool fresh = (GaFrame() - mirror.receivedFrame) < 20;
             bool free = mirror.controllerClientId == 0 || mirror.controllerClientId == ownClientId;
-            if (fresh && free && mirror.state.value("h", 0) > 0) {
-                freeKeys.push_back(key);
+            if (!fresh || !free || mirror.state.value("h", 0) <= 0) {
+                continue;
             }
-        }
-        std::sort(freeKeys.begin(), freeKeys.end());
+            if (wantedId != 0 && mirror.state.value("i", (s16)0) != wantedId) {
+                continue;
+            }
 
-        if (freeKeys.empty()) {
-            GaNotify("No free monsters near Link right now.");
+            f32 dist = 1.0e9f;
+            if (mirror.state.contains("p") && mirror.state["p"].is_array() && mirror.state["p"].size() == 3) {
+                f32 dx = mirror.state["p"][0].get<f32>() - linkPos.x;
+                f32 dy = mirror.state["p"][1].get<f32>() - linkPos.y;
+                f32 dz = mirror.state["p"][2].get<f32>() - linkPos.z;
+                dist = sqrtf(dx * dx + dy * dy + dz * dz);
+            }
+            freeMonsters.push_back({ dist, key });
+        }
+        std::sort(freeMonsters.begin(), freeMonsters.end());
+
+        if (freeMonsters.empty()) {
+            GaNotify(std::string("No free ") + wantedName + " near Link right now.");
         } else {
-            auto next = std::upper_bound(freeKeys.begin(), freeKeys.end(), gaControlledKey);
-            uint32_t key = next != freeKeys.end() ? *next : freeKeys.front();
+            // Nearest one first; if we already control one, move on to the next nearest
+            size_t pick = 0;
+            for (size_t i = 0; i < freeMonsters.size(); i++) {
+                if (freeMonsters[i].second == gaControlledKey) {
+                    pick = (i + 1) % freeMonsters.size();
+                    break;
+                }
+            }
+            uint32_t key = freeMonsters[pick].second;
             if (key != gaControlledKey) {
                 if (gaControlledKey != 0) {
                     SendPacket_GaRelease(gaControlledKey);

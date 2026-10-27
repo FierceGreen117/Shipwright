@@ -15,6 +15,7 @@ static const char* pvpModes[3] = { "Off", "On", "On + Friendly Fire" };
 static std::vector<const char*> teleportModes = { "None", "Team Only", "All" };
 static std::vector<const char*> showLocationsModes = { "None", "Team Only", "All" };
 static const char* ganonsArmyRoles[3] = { "Off", "Play as Link", "Play as Ganon's Army" };
+static const char* ganonsArmyMonsters[3] = { "Any", "Stalfos", "Iron Knuckle" };
 
 void AnchorMainMenu(WidgetInfo& info) {
     auto anchor = Anchor::Instance;
@@ -167,10 +168,20 @@ void AnchorMainMenu(WidgetInfo& info) {
                                     .LabelPosition(UIWidgets::LabelPositions::Above)
                                     .Color(THEME_COLOR)
                                     .Tooltip("One player picks Link. Everyone else picks Ganon's Army.\n\n"
-                                             "Ganon's Army: press L to take over a Stalfos or Iron Knuckle near Link "
-                                             "(press L again to switch).\n"
+                                             "Ganon's Army: pick a Monster below, then press L to take over the "
+                                             "nearest one (press L again to switch).\n"
                                              "B: Slash   A: Jump Attack   R: Block   Z: Dodge Back"))) {
         anchor->SetGanonsArmyRole(CVarGetInteger(CVAR_REMOTE_ANCHOR("GanonsArmy.Role"), GANONS_ARMY_ROLE_OFF));
+    }
+
+    if (CVarGetInteger(CVAR_REMOTE_ANCHOR("GanonsArmy.Role"), GANONS_ARMY_ROLE_OFF) == GANONS_ARMY_ROLE_ARMY) {
+        UIWidgets::CVarCombobox("Monster:", CVAR_REMOTE_ANCHOR("GanonsArmy.Monster"), ganonsArmyMonsters,
+                                UIWidgets::ComboboxOptions()
+                                    .DefaultIndex(GANONS_ARMY_MONSTER_ANY)
+                                    .LabelPosition(UIWidgets::LabelPositions::Above)
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("Which monster L takes over. L picks the nearest free one to Link; "
+                                             "press L again for the next nearest."));
     }
 
     ImGui::Spacing();

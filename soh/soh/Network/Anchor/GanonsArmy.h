@@ -28,6 +28,13 @@ typedef enum {
     GANONS_ARMY_ROLE_ARMY = 2,
 } GanonsArmyRole;
 
+// Which monster an army player takes over with L (menu choice)
+typedef enum {
+    GANONS_ARMY_MONSTER_ANY = 0,
+    GANONS_ARMY_MONSTER_STALFOS = 1,
+    GANONS_ARMY_MONSTER_IRON_KNUCKLE = 2,
+} GanonsArmyMonster;
+
 typedef struct {
     s16 yaw;     // World direction the army player is pushing the stick towards
     f32 mag;     // Stick strength, 0.0 to 1.0
