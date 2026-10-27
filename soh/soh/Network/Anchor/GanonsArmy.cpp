@@ -18,6 +18,7 @@ extern "C" {
 #include "src/overlays/actors/ovl_En_Test/z_en_test.h"
 #include "src/overlays/actors/ovl_En_Ik/z_en_ik.h"
 extern PlayState* gPlayState;
+int16_t Entrance_OverrideNextIndex(int16_t nextEntranceIndex);
 void func_80077D10(f32* arg0, s16* arg1, Input* input);
 }
 
@@ -683,6 +684,7 @@ void Anchor::GaEndSolo() {
         gaSoloMonster = nullptr;
     }
     gaSoloMonsterId = 0;
+    gaSoloHasSafePos = false;
 
     if (IsSaveLoaded() && gaSavedPlayerDraw != nullptr) {
         Player* player = GET_PLAYER(gPlayState);
@@ -695,6 +697,12 @@ void Anchor::GaEndSolo() {
 
 void Anchor::GaSoloFrame() {
     Player* player = GET_PLAYER(gPlayState);
+
+    // Finish loading the room on the other side of a door
+    if (gaRoomChangeRequested && gPlayState->roomCtx.status == 0) {
+        Room_FinishRoomChange(gPlayState, &gPlayState->roomCtx);
+        gaRoomChangeRequested = false;
+    }
 
     s32 wanted = CVarGetInteger(CVAR_REMOTE_ANCHOR("GanonsArmy.Monster"), GANONS_ARMY_MONSTER_ANY);
     s16 wantedId = wanted == GANONS_ARMY_MONSTER_IRON_KNUCKLE ? ACTOR_EN_IK : ACTOR_EN_TEST;
@@ -722,9 +730,9 @@ void Anchor::GaSoloFrame() {
         // Stalfos type 2 stands on the ground; Iron Knuckle type 2 is the standing black one.
         // 0x3F is an unused switch flag so the Iron Knuckle isn't removed on spawn.
         s16 params = wantedId == ACTOR_EN_IK ? 0x3F02 : STALFOS_TYPE_2;
-        Actor* monster =
-            Actor_Spawn(&gPlayState->actorCtx, gPlayState, wantedId, player->actor.world.pos.x,
-                        player->actor.world.pos.y, player->actor.world.pos.z, 0, player->actor.shape.rot.y, 0, params);
+        Vec3f spawnPos = gaSoloHasSafePos ? gaSoloSafePos : player->actor.world.pos;
+        Actor* monster = Actor_Spawn(&gPlayState->actorCtx, gPlayState, wantedId, spawnPos.x, spawnPos.y, spawnPos.z, 0,
+                                     player->actor.shape.rot.y, 0, params);
         if (monster == nullptr) {
             static u32 sLastFailFrame = 0;
             if (GaFrame() - sLastFailFrame > 200) {
@@ -739,8 +747,8 @@ void Anchor::GaSoloFrame() {
         gaSoloMonster = monster;
         gaSoloMonsterId = wantedId;
         GaNotify(std::string("You are a ") + wantedName +
-                 (wantedId == ACTOR_EN_IK ? "! B: Slam  A: Swing  R: Block  Z: Spin"
-                                          : "! B: Slash  A: Jump Attack  R: Block  Z: Dodge"));
+                 (wantedId == ACTOR_EN_IK ? "! B: Slam  A: Swing  R: Block  C-Down: Spin  Z: Camera"
+                                          : "! B: Slash  A: Jump Attack  R: Block  C-Down: Dodge  Z: Camera"));
     }
 
     // Hide Link; the camera follows a point just in front of the monster so it stays on screen
@@ -753,6 +761,16 @@ void Anchor::GaSoloFrame() {
 
     Actor* monster = gaSoloMonster;
     monster->flags &= ~ACTOR_FLAG_ATTENTION_ENABLED;
+    monster->room = -1; // Keep the monster when moving between rooms
+
+    if ((monster->bgCheckFlags & BGCHECKFLAG_GROUND) && monster->floorPoly != nullptr) {
+        gaSoloSafePos = monster->world.pos;
+        gaSoloHasSafePos = true;
+    }
+
+    if (!busy) {
+        GaSoloExitsAndDoors(monster);
+    }
 
     // Iron Knuckles start as a statue; wake ours up straight away
     if (monster->id == ACTOR_EN_IK && monster->init == nullptr) {
@@ -771,6 +789,236 @@ void Anchor::GaSoloFrame() {
     player->actor.shape.rot.y = player->actor.world.rot.y = yaw;
     player->actor.focus.pos = monster->world.pos;
     player->actor.focus.pos.y += 60.0f;
+}
+
+// MARK: - Solo test: loading zones and doors
+
+// Walk into a loading zone (floor or wall) to go to the next area, like Link does
+static bool GaTryExit(CollisionPoly* poly, s32 bgId) {
+    if (poly == nullptr || gPlayState->transitionTrigger != TRANS_TRIGGER_OFF) {
+        return false;
+    }
+    s32 exitIndex = SurfaceType_GetSceneExitIndex(&gPlayState->colCtx, poly, bgId);
+    if (exitIndex == 0) {
+        return false;
+    }
+
+    s16 next = gPlayState->setupExitList[exitIndex - 1];
+    if (IS_RANDO) {
+        next = Entrance_OverrideNextIndex(next);
+    }
+
+    if (next == ENTR_RETURN_GROTTO) {
+        // Leaving a grotto: back to where we came in
+        gSaveContext.respawnFlag = 2;
+        gPlayState->nextEntranceIndex = gSaveContext.respawn[RESPAWN_MODE_RETURN].entranceIndex;
+        gPlayState->transitionType = TRANS_TYPE_FADE_WHITE;
+        gSaveContext.nextTransitionType = TRANS_TYPE_FADE_WHITE;
+    } else if (next >= ENTR_RETURN_YOUSEI_IZUMI_YOKO) {
+        return false; // Fairy fountain / shop "go back where you came from" exits aren't supported yet
+    } else {
+        gPlayState->nextEntranceIndex = next;
+        gSaveContext.retainWeatherMode = 1;
+        Scene_SetTransitionForNextEntrance(gPlayState);
+    }
+    gPlayState->transitionTrigger = TRANS_TRIGGER_START;
+    return true;
+}
+
+void Anchor::GaSoloExitsAndDoors(Actor* monster) {
+    // Loading zones under the monster or in the wall it is walking into
+    if (GaTryExit(monster->floorPoly, monster->floorBgId)) {
+        return;
+    }
+    if ((monster->bgCheckFlags & BGCHECKFLAG_WALL) && GaTryExit(monster->wallPoly, monster->wallBgId)) {
+        return;
+    }
+
+    if (gaSoloDoorCooldown > 0) {
+        gaSoloDoorCooldown--;
+        return;
+    }
+
+    // Doors: push the stick into a door to go through it
+    GanonsArmyPuppetInput in;
+    if (!GaGetPuppetInput(monster, &in) || in.mag < 0.5f) {
+        return;
+    }
+
+    Actor* door = gPlayState->actorCtx.actorLists[ACTORCAT_DOOR].head;
+    for (; door != nullptr; door = door->next) {
+        f32 dx = door->world.pos.x - monster->world.pos.x;
+        f32 dz = door->world.pos.z - monster->world.pos.z;
+        f32 distXZ = sqrtf(dx * dx + dz * dz);
+        if (distXZ > 75.0f || fabsf(door->world.pos.y - monster->world.pos.y) > 60.0f) {
+            continue;
+        }
+        s16 towardDoor = Math_Vec3f_Yaw(&monster->world.pos, &door->world.pos);
+        if (ABS((s16)(towardDoor - in.yaw)) > 0x2000) {
+            continue; // Not pushing towards this door
+        }
+
+        // Which side of the door are we on? Go out the other side.
+        s16 doorYaw = door->shape.rot.y;
+        f32 frontX = Math_SinS(doorYaw);
+        f32 frontZ = Math_CosS(doorYaw);
+        f32 side =
+            (monster->world.pos.x - door->world.pos.x) * frontX + (monster->world.pos.z - door->world.pos.z) * frontZ;
+        f32 outDir = side >= 0.0f ? -1.0f : 1.0f;
+        Vec3f through = door->world.pos;
+        through.x += frontX * outDir * 70.0f;
+        through.z += frontZ * outDir * 70.0f;
+
+        // A door that leads to another area has a loading zone right behind it
+        Vec3f from = monster->world.pos;
+        from.y += 30.0f;
+        Vec3f to = through;
+        to.y += 30.0f;
+        Vec3f hit;
+        CollisionPoly* poly = nullptr;
+        s32 bgId = BGCHECK_SCENE;
+        if (BgCheck_EntityLineTest1(&gPlayState->colCtx, &from, &to, &hit, &poly, true, true, true, true, &bgId) &&
+            GaTryExit(poly, bgId)) {
+            return;
+        }
+
+        // A door between rooms of the same area: load the room on the other side
+        u16 index = GET_TRANSITION_ACTOR_INDEX(door);
+        if (index < gPlayState->transiActorCtx.numActors && gPlayState->transiActorCtx.list[index].id == door->id) {
+            TransitionActorEntry* entry = &gPlayState->transiActorCtx.list[index];
+            s8 curRoom = gPlayState->roomCtx.curRoom.num;
+            s8 newRoom = entry->sides[0].room != curRoom ? entry->sides[0].room : entry->sides[1].room;
+            if (newRoom >= 0 && newRoom != curRoom && gPlayState->roomCtx.status == 0) {
+                if (Room_RequestNewRoom(gPlayState, &gPlayState->roomCtx, newRoom)) {
+                    gaRoomChangeRequested = true;
+                }
+            }
+        }
+
+        monster->world.pos = through;
+        monster->prevPos = through;
+        monster->shape.rot.y = monster->world.rot.y = outDir > 0.0f ? doorYaw : (s16)(doorYaw + 0x8000);
+        monster->speedXZ = 0.0f;
+        gaSoloDoorCooldown = 30;
+        return;
+    }
+}
+
+// MARK: - Monster camera
+
+// The monster this player is playing as, if any
+Actor* Anchor::GaCameraTarget() {
+    if (gaSoloMonster != nullptr && gaSoloMonster->update != nullptr) {
+        return gaSoloMonster;
+    }
+    if (gaControlledKey != 0 && GetGanonsArmyRole() == GANONS_ARMY_ROLE_ARMY) {
+        return GaFindLocalEnemy(gaControlledKey);
+    }
+    return nullptr;
+}
+
+void Anchor::GaUpdateCamera(Camera* camera) {
+    static bool sActive = false;
+    static s16 sYaw = 0;
+    static Vec3f sEye;
+    static Vec3f sAt;
+    static Vec3f sLastPos;
+    static s32 sSnapTimer = 0;
+
+    Actor* monster = (camera != nullptr && camera->thisIdx == CAM_ID_MAIN && gPlayState != nullptr &&
+                      gPlayState->transitionMode == TRANS_MODE_OFF && gPlayState->csCtx.state == CS_STATE_IDLE)
+                         ? GaCameraTarget()
+                         : nullptr;
+    if (monster == nullptr || monster->world.pos.y < -30000.0f) {
+        sActive = false;
+        return;
+    }
+
+    // Bigger monsters get a camera further back
+    bool ironKnuckle = monster->id == ACTOR_EN_IK;
+    f32 distance = ironKnuckle ? 440.0f : 380.0f;
+    f32 lookHeight = ironKnuckle ? 95.0f : 80.0f;
+    f32 eyeHeight = ironKnuckle ? 120.0f : 100.0f;
+
+    Input* input = &gPlayState->state.input[0];
+    bool canControl = gPlayState->pauseCtx.state == 0 && gPlayState->msgCtx.msgMode == MSGMODE_NONE;
+
+    Vec3f pos = monster->world.pos;
+    bool justStarted = !sActive;
+    if (!sActive) {
+        sActive = true;
+        sYaw = monster->shape.rot.y;
+        sLastPos = pos;
+        sSnapTimer = 0;
+    }
+
+    f32 moved = sqrtf(SQ(pos.x - sLastPos.x) + SQ(pos.z - sLastPos.z));
+    sLastPos = pos;
+    s16 behind = monster->shape.rot.y;
+    s16 diff = behind - sYaw;
+
+    if (canControl && CHECK_BTN_ALL(input->press.button, BTN_Z)) {
+        sSnapTimer = 15; // Z: swing the camera behind the monster
+    }
+
+    if (sSnapTimer > 0 || (canControl && CHECK_BTN_ALL(input->cur.button, BTN_Z))) {
+        sYaw += (s16)(diff * 0.3f);
+        if (sSnapTimer > 0) {
+            sSnapTimer--;
+        }
+    } else if (canControl && (input->cur.right_stick_x > 15 || input->cur.right_stick_x < -15)) {
+        sYaw -= input->cur.right_stick_x * 12; // Right stick turns the camera
+    } else if (moved > 0.5f && ABS(diff) < 0x6800) {
+        // Swing round behind the monster as it walks, faster the further it has turned
+        f32 rate = ABS(diff) > 0x2000 ? 0.09f : 0.05f;
+        sYaw += (s16)(diff * rate);
+    }
+
+    // Where the camera wants to be
+    Vec3f at = pos;
+    at.y += lookHeight;
+    Vec3f eye = at;
+    eye.x -= Math_SinS(sYaw) * distance;
+    eye.z -= Math_CosS(sYaw) * distance;
+    eye.y += eyeHeight - lookHeight + 60.0f;
+
+    // Don't go through walls
+    Vec3f hit;
+    CollisionPoly* poly = nullptr;
+    s32 bgId = BGCHECK_SCENE;
+    if (BgCheck_CameraLineTest1(&gPlayState->colCtx, &at, &eye, &hit, &poly, true, true, true, -1, &bgId)) {
+        eye.x = hit.x + (at.x - hit.x) * 0.08f;
+        eye.y = hit.y + (at.y - hit.y) * 0.08f;
+        eye.z = hit.z + (at.z - hit.z) * 0.08f;
+    }
+
+    // Smooth it out (jump straight there when starting, or after the monster teleports through a door)
+    if (justStarted || moved > 60.0f) {
+        sAt = at;
+        sEye = eye;
+    }
+    sAt.x += (at.x - sAt.x) * 0.5f;
+    sAt.y += (at.y - sAt.y) * 0.3f;
+    sAt.z += (at.z - sAt.z) * 0.5f;
+    sEye.x += (eye.x - sEye.x) * 0.35f;
+    sEye.y += (eye.y - sEye.y) * 0.25f;
+    sEye.z += (eye.z - sEye.z) * 0.35f;
+
+    camera->at = sAt;
+    camera->eye = sEye;
+    camera->eyeNext = sEye;
+    camera->dist = distance;
+    camera->inputDir.x = 0;
+    camera->inputDir.y = sYaw; // So the stick moves the monster relative to this camera
+    camera->inputDir.z = 0;
+    camera->camDir.y = sYaw;
+}
+
+extern "C" void GanonsArmy_UpdateCamera(void* camera) {
+    if (Anchor::Instance == nullptr || !Anchor::Instance->isConnected) {
+        return;
+    }
+    Anchor::Instance->GaUpdateCamera((Camera*)camera);
 }
 
 void Anchor::GaArmyFrame() {
@@ -841,7 +1089,7 @@ void Anchor::GaArmyFrame() {
                 if (type != nullptr) {
                     name = type->name;
                 }
-                GaNotify("You are now a " + name + "! B: Slash  A: Jump Attack  R: Block  Z: Dodge");
+                GaNotify("You are now a " + name + "! B / A: Attack  R: Block  C-Down: Dodge  Z: Camera");
             }
             controlled = GaFindLocalEnemy(gaControlledKey);
         } else if (sClaimConfirmed || (GaFrame() - sClaimFrame) > 40) {
@@ -1022,7 +1270,8 @@ void Anchor::RegisterGanonsArmyHooks() {
         gaControlledKey = 0;
         gaLinkRoomNum = -1;
         gaRoomChangeRequested = false;
-        gaSoloMonster = nullptr; // The old area's actors are gone; a new monster spawns next frame
+        gaSoloMonster = nullptr;  // The old area's actors are gone; a new monster spawns next frame
+        gaSoloHasSafePos = false; // Start where Link enters the new area
         if (GetGanonsArmyRole() == GANONS_ARMY_ROLE_LINK) {
             gaPuppets.clear();
         }

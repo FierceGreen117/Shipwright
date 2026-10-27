@@ -48,6 +48,10 @@ struct Actor;
 // Safe to call several times per frame; button presses are only reported once per frame.
 s32 GanonsArmy_GetPuppetInput(struct Actor* actor, GanonsArmyPuppetInput* out);
 
+// Called by the camera after it updates. While this player is a monster, places the camera behind the monster.
+// `camera` is a Camera*.
+void GanonsArmy_UpdateCamera(void* camera);
+
 #ifdef __cplusplus
 }
 #endif

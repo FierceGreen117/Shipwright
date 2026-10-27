@@ -170,7 +170,7 @@ void AnchorMainMenu(WidgetInfo& info) {
                                     .Tooltip("One player picks Link. Everyone else picks Ganon's Army.\n\n"
                                              "Ganon's Army: pick a Monster below, then press L to take over the "
                                              "nearest one (press L again to switch).\n"
-                                             "B: Slash   A: Jump Attack   R: Block   Z: Dodge Back"))) {
+                                             "B / A: Attack   R: Block   C-Down: Dodge / Spin   Z: Camera behind you   Right stick: Turn camera"))) {
         anchor->SetGanonsArmyRole(CVarGetInteger(CVAR_REMOTE_ANCHOR("GanonsArmy.Role"), GANONS_ARMY_ROLE_OFF));
     }
 

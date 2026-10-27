@@ -1780,7 +1780,7 @@ void EnTest_Puppet(EnTest* this, PlayState* play) {
         EnTest_SetupJumpslash(this);
         return;
     }
-    if ((in->pressed & BTN_Z) && (this->actor.params != STALFOS_TYPE_CEILING)) {
+    if ((in->pressed & BTN_CDOWN) && (this->actor.params != STALFOS_TYPE_CEILING)) {
         this->actor.world.rot.y = this->actor.shape.rot.y;
         EnTest_SetupJumpBack(this);
         return;

@@ -815,7 +815,7 @@ void EnIk_Puppet(EnIk* this, PlayState* play) {
         func_80A755F0(this); // Block
         return;
     }
-    if (in->pressed & BTN_Z) {
+    if (in->pressed & BTN_CDOWN) {
         func_80A754A0(this); // Spin around and swing
         return;
     }

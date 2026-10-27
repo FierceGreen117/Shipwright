@@ -218,8 +218,14 @@ class Anchor : public Network {
     void* gaSavedPlayerDraw = nullptr;
     Actor* gaSoloMonster = nullptr; // Solo test: the monster this player turned into (no Link player in the room)
     s16 gaSoloMonsterId = 0;
+    Vec3f gaSoloSafePos = { 0.0f, 0.0f, 0.0f }; // Last spot the solo monster stood on solid ground
+    bool gaSoloHasSafePos = false;
+    u32 gaSoloDoorCooldown = 0;
     void GaSoloFrame();
     void GaEndSolo();
+    void GaSoloExitsAndDoors(Actor* monster);
+    Actor* GaCameraTarget();
+    void GaUpdateCamera(Camera* camera);
 
     u8 GetGanonsArmyRole();
     void SetGanonsArmyRole(u8 role);
