@@ -216,6 +216,10 @@ class Anchor : public Network {
     bool gaRoomChangeRequested = false;
     s32 gaFollowEntrance = -1;
     void* gaSavedPlayerDraw = nullptr;
+    Actor* gaSoloMonster = nullptr; // Solo test: the monster this player turned into (no Link player in the room)
+    s16 gaSoloMonsterId = 0;
+    void GaSoloFrame();
+    void GaEndSolo();
 
     u8 GetGanonsArmyRole();
     void SetGanonsArmyRole(u8 role);

@@ -180,8 +180,9 @@ void AnchorMainMenu(WidgetInfo& info) {
                                     .DefaultIndex(GANONS_ARMY_MONSTER_ANY)
                                     .LabelPosition(UIWidgets::LabelPositions::Above)
                                     .Color(THEME_COLOR)
-                                    .Tooltip("Which monster L takes over. L picks the nearest free one to Link; "
-                                             "press L again for the next nearest."));
+                                    .Tooltip("Playing alone? You turn into this monster right away so you can "
+                                             "try it out.\n\nWith a Link player in the room: L takes over the "
+                                             "nearest free one; press L again for the next nearest."));
     }
 
     ImGui::Spacing();

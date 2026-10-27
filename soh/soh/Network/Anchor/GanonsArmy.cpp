@@ -213,6 +213,7 @@ void Anchor::SetGanonsArmyRole(u8 role) {
     gaMirrors.clear();
     gaControlledKey = 0;
     gaFollowEntrance = -1;
+    GaEndSolo();
 
     // Give the army player their Link back
     if (role != GANONS_ARMY_ROLE_ARMY && gaSavedPlayerDraw != nullptr && IsSaveLoaded()) {
@@ -229,7 +230,7 @@ void Anchor::SetGanonsArmyRole(u8 role) {
     if (role == GANONS_ARMY_ROLE_LINK) {
         GaNotify("You are Link. Ganon's Army is coming for you!");
     } else if (role == GANONS_ARMY_ROLE_ARMY) {
-        GaNotify("You joined Ganon's Army. Press L near Link to take over a monster.");
+        GaNotify("You joined Ganon's Army.");
     }
 }
 
@@ -332,6 +333,22 @@ void Anchor::GaLinkFrame() {
 // MARK: - Link's game: puppet input
 
 bool Anchor::GaGetPuppetInput(Actor* actor, GanonsArmyPuppetInput* out) {
+    // Solo test: our own monster is driven by our own controller
+    if (gaSoloMonster != nullptr && actor == gaSoloMonster && gPlayState != nullptr) {
+        Input* input = &gPlayState->state.input[0];
+        f32 magnitude = 0.0f;
+        s16 angle = 0;
+        *out = {};
+        if (gPlayState->pauseCtx.state == 0 && gPlayState->msgCtx.msgMode == MSGMODE_NONE) {
+            func_80077D10(&magnitude, &angle, input);
+            out->yaw = (s16)(Camera_GetInputDirYaw(GET_ACTIVE_CAM(gPlayState)) + angle);
+            out->mag = magnitude / 60.0f;
+            out->held = input->cur.button;
+            out->pressed = input->press.button; // Same all frame, like the online version
+        }
+        return true;
+    }
+
     if (GetGanonsArmyRole() != GANONS_ARMY_ROLE_LINK || gaPuppets.empty()) {
         return false;
     }
@@ -495,7 +512,7 @@ void Anchor::HandlePacket_GaEnemyState(nlohmann::json payload) {
 
         s16 params = enemy.value("pa", (s16)0);
         if (actorId == ACTOR_EN_IK) {
-            params = (params & 0xFF) | 0xFF00; // No switch flag, so the copy isn't removed on spawn
+            params = (params & 0xFF) | 0x3F00; // Unused switch flag, so the copy isn't removed on spawn
         }
 
         auto& pos = enemy.at("p");
@@ -658,10 +675,107 @@ static Actor* GaFindLocalEnemy(uint32_t key) {
     return found;
 }
 
+// MARK: - Solo test (nobody is playing Link)
+
+void Anchor::GaEndSolo() {
+    if (gaSoloMonster != nullptr) {
+        Actor_Kill(gaSoloMonster);
+        gaSoloMonster = nullptr;
+    }
+    gaSoloMonsterId = 0;
+
+    if (IsSaveLoaded() && gaSavedPlayerDraw != nullptr) {
+        Player* player = GET_PLAYER(gPlayState);
+        if (player->actor.draw == nullptr) {
+            player->actor.draw = (ActorFunc)gaSavedPlayerDraw;
+        }
+        player->actor.shape.shadowAlpha = 255;
+    }
+}
+
+void Anchor::GaSoloFrame() {
+    Player* player = GET_PLAYER(gPlayState);
+
+    s32 wanted = CVarGetInteger(CVAR_REMOTE_ANCHOR("GanonsArmy.Monster"), GANONS_ARMY_MONSTER_ANY);
+    s16 wantedId = wanted == GANONS_ARMY_MONSTER_IRON_KNUCKLE ? ACTOR_EN_IK : ACTOR_EN_TEST;
+    const char* wantedName = wantedId == ACTOR_EN_IK ? "Iron Knuckle" : "Stalfos";
+
+    // Picked a different monster in the menu: swap
+    if (gaSoloMonster != nullptr && gaSoloMonsterId != wantedId) {
+        Vec3f pos = gaSoloMonster->world.pos;
+        s16 yaw = gaSoloMonster->shape.rot.y;
+        Actor_Kill(gaSoloMonster);
+        gaSoloMonster = nullptr;
+        player->actor.world.pos = pos;
+        player->actor.shape.rot.y = yaw;
+    }
+
+    // Don't spawn during cutscenes, text or area changes
+    bool busy = gPlayState->transitionTrigger != TRANS_TRIGGER_OFF || gPlayState->transitionMode != TRANS_MODE_OFF ||
+                gPlayState->msgCtx.msgMode != MSGMODE_NONE || Player_InBlockingCsMode(gPlayState, player);
+
+    if (gaSoloMonster == nullptr) {
+        if (busy) {
+            return;
+        }
+
+        // Stalfos type 2 stands on the ground; Iron Knuckle type 2 is the standing black one.
+        // 0x3F is an unused switch flag so the Iron Knuckle isn't removed on spawn.
+        s16 params = wantedId == ACTOR_EN_IK ? 0x3F02 : STALFOS_TYPE_2;
+        Actor* monster =
+            Actor_Spawn(&gPlayState->actorCtx, gPlayState, wantedId, player->actor.world.pos.x,
+                        player->actor.world.pos.y, player->actor.world.pos.z, 0, player->actor.shape.rot.y, 0, params);
+        if (monster == nullptr) {
+            static u32 sLastFailFrame = 0;
+            if (GaFrame() - sLastFailFrame > 200) {
+                sLastFailFrame = GaFrame();
+                GaNotify(std::string("Couldn't turn into a ") + wantedName + " here. Try another area.");
+            }
+            return;
+        }
+
+        monster->flags |= ACTOR_FLAG_UPDATE_CULLING_DISABLED | ACTOR_FLAG_DRAW_CULLING_DISABLED;
+        monster->flags &= ~ACTOR_FLAG_ATTENTION_ENABLED; // Can't lock on to yourself
+        gaSoloMonster = monster;
+        gaSoloMonsterId = wantedId;
+        GaNotify(std::string("You are a ") + wantedName +
+                 (wantedId == ACTOR_EN_IK ? "! B: Slam  A: Swing  R: Block  Z: Spin"
+                                          : "! B: Slash  A: Jump Attack  R: Block  Z: Dodge"));
+    }
+
+    // Hide Link; the camera follows a point just in front of the monster so it stays on screen
+    if (player->actor.draw != nullptr) {
+        gaSavedPlayerDraw = (void*)player->actor.draw;
+        player->actor.draw = nullptr;
+    }
+    player->actor.shape.shadowAlpha = 0;
+    player->invincibilityTimer = 20;
+
+    Actor* monster = gaSoloMonster;
+    monster->flags &= ~ACTOR_FLAG_ATTENTION_ENABLED;
+
+    // Iron Knuckles start as a statue; wake ours up straight away
+    if (monster->id == ACTOR_EN_IK && monster->init == nullptr) {
+        EnIk* ironKnuckle = (EnIk*)monster;
+        if (ironKnuckle->unk_2F8 == 3 && ironKnuckle->skelAnime.playSpeed == 0.0f) {
+            ironKnuckle->skelAnime.playSpeed = 1.0f;
+        }
+    }
+    s16 yaw = monster->shape.rot.y;
+    // Keeping Link a little ahead of the monster also keeps the monster facing where it is going,
+    // since its attacks turn it towards Link
+    player->actor.world.pos.x = monster->world.pos.x + Math_SinS(yaw) * 60.0f;
+    player->actor.world.pos.y = monster->world.pos.y;
+    player->actor.world.pos.z = monster->world.pos.z + Math_CosS(yaw) * 60.0f;
+    player->actor.prevPos = player->actor.world.pos;
+    player->actor.shape.rot.y = player->actor.world.rot.y = yaw;
+    player->actor.focus.pos = monster->world.pos;
+    player->actor.focus.pos.y += 60.0f;
+}
+
 void Anchor::GaArmyFrame() {
     static u32 sClaimFrame = 0;
     static bool sClaimConfirmed = false;
-    static bool sToldWaiting = false;
 
     if (!IsSaveLoaded()) {
         return;
@@ -669,19 +783,13 @@ void Anchor::GaArmyFrame() {
 
     AnchorClient* link = GetGanonsArmyLink();
     if (link == nullptr) {
-        if (!sToldWaiting) {
-            sToldWaiting = true;
-            GaNotify("Waiting for someone to pick \"Play as Link\"...");
-        }
-        if (gaSavedPlayerDraw != nullptr) {
-            Player* player = GET_PLAYER(gPlayState);
-            if (player->actor.draw == nullptr) {
-                player->actor.draw = (ActorFunc)gaSavedPlayerDraw;
-            }
-        }
+        // Nobody is playing Link: turn into the chosen monster right here to test it
+        GaSoloFrame();
         return;
     }
-    sToldWaiting = false;
+    if (gaSoloMonster != nullptr) {
+        GaEndSolo(); // A Link player joined, switch to the real game
+    }
 
     // Follow Link to whatever area they're in
     if (link->sceneNum != gPlayState->sceneNum) {
@@ -848,7 +956,8 @@ void Anchor::RegisterGanonsArmyHooks() {
             return;
         }
         AnchorClient* link = GetGanonsArmyLink();
-        if (link == nullptr || link->sceneNum != gPlayState->sceneNum) {
+        bool solo = link == nullptr && gaSoloMonster != nullptr;
+        if (!solo && (link == nullptr || link->sceneNum != gPlayState->sceneNum)) {
             return;
         }
 
@@ -897,7 +1006,12 @@ void Anchor::RegisterGanonsArmyHooks() {
             sMirrorHookIds[actorId] =
                 GameInteractor::Instance->RegisterGameHookForID<GameInteractor::ShouldActorUpdate>(actorId, mirrorHook);
             sDestroyHookIds[actorId] = GameInteractor::Instance->RegisterGameHookForID<GameInteractor::OnActorDestroy>(
-                actorId, [&](void* actorRef) { gaSpawnedKeys.erase((Actor*)actorRef); });
+                actorId, [&](void* actorRef) {
+                    gaSpawnedKeys.erase((Actor*)actorRef);
+                    if ((Actor*)actorRef == gaSoloMonster) {
+                        gaSoloMonster = nullptr; // Respawned next frame
+                    }
+                });
         }
     }
 
@@ -908,6 +1022,7 @@ void Anchor::RegisterGanonsArmyHooks() {
         gaControlledKey = 0;
         gaLinkRoomNum = -1;
         gaRoomChangeRequested = false;
+        gaSoloMonster = nullptr; // The old area's actors are gone; a new monster spawns next frame
         if (GetGanonsArmyRole() == GANONS_ARMY_ROLE_LINK) {
             gaPuppets.clear();
         }
